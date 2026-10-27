@@ -1,0 +1,229 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>SubDomain Finder</title>
+</head>
+<body>
+
+<h1>SubDomain Finder</h1>
+
+<p>Enter website domain:</p>
+
+<input type="text" id="domain" placeholder="deltarune.com" size="40">
+<button onclick="findPages()">Find pages</button>
+<button onclick="clearResults()">Clear</button>
+<button onclick="downloadResults()">Download TXT</button>
+
+<p id="status">Ready.</p>
+
+<h2>Found pages:</h2>
+<p id="count">Pages found: 0</p>
+
+<div id="results"></div>
+
+<script>
+let pages = new Set();
+let visitedSitemaps = new Set();
+
+async function fetchText(url) {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+        throw new Error("HTTP " + response.status);
+    }
+
+    return await response.text();
+}
+
+function normalizeDomain(value) {
+    value = value.trim();
+
+    if (!value.startsWith("http://") &&
+        !value.startsWith("https://")) {
+        value = "https://" + value;
+    }
+
+    const url = new URL(value);
+
+    if (!["http:", "https:"].includes(url.protocol)) {
+        throw new Error("Only HTTP and HTTPS are supported.");
+    }
+
+    return url.origin;
+}
+
+async function readSitemap(url, baseDomain) {
+    if (visitedSitemaps.has(url)) return;
+    visitedSitemaps.add(url);
+
+    if (visitedSitemaps.size > 500) return;
+
+    try {
+        const xml = await fetchText(url);
+        const documentXML = new DOMParser()
+            .parseFromString(xml, "application/xml");
+
+        if (documentXML.querySelector("parsererror")) return;
+
+        const locations = Array.from(
+            documentXML.getElementsByTagNameNS("*", "loc")
+        ).map(node => node.textContent.trim());
+
+        const isSitemapIndex =
+            documentXML.getElementsByTagNameNS(
+                "*", "sitemapindex"
+            ).length > 0;
+
+        if (isSitemapIndex) {
+            for (const location of locations) {
+                try {
+                    const parsed = new URL(location);
+
+                    if (
+                        parsed.protocol.startsWith("http") &&
+                        parsed.hostname === new URL(baseDomain).hostname
+                    ) {
+                        await readSitemap(location, baseDomain);
+                    }
+                } catch (error) {}
+            }
+        } else {
+            for (const location of locations) {
+                try {
+                    const parsed = new URL(location);
+
+                    if (
+                        parsed.origin === baseDomain &&
+                        parsed.protocol.startsWith("http")
+                    ) {
+                        pages.add(parsed.href);
+                    }
+                } catch (error) {}
+            }
+
+            updateResults();
+        }
+    } catch (error) {
+        console.log("Could not read sitemap:", url, error.message);
+    }
+}
+
+async function findPages() {
+    const input = document.getElementById("domain").value;
+
+    if (!input.trim()) {
+        document.getElementById("status").textContent =
+            "Enter a domain first.";
+        return;
+    }
+
+    pages.clear();
+    visitedSitemaps.clear();
+    updateResults();
+
+    let baseDomain;
+
+    try {
+        baseDomain = normalizeDomain(input);
+    } catch (error) {
+        document.getElementById("status").textContent =
+            "Invalid domain.";
+        return;
+    }
+
+    document.getElementById("status").textContent =
+        "Searching sitemaps...";
+
+    const sitemapCandidates = new Set([
+        baseDomain + "/sitemap.xml",
+        baseDomain + "/sitemap_index.xml"
+    ]);
+
+    try {
+        const robots = await fetchText(baseDomain + "/robots.txt");
+
+        for (const line of robots.split(/\r?\n/)) {
+            const match = line.match(/^\s*Sitemap:\s*(\S+)/i);
+
+            if (match) {
+                sitemapCandidates.add(match[1]);
+            }
+        }
+    } catch (error) {
+        console.log("Could not read robots.txt:", error.message);
+    }
+
+    for (const sitemap of sitemapCandidates) {
+        await readSitemap(sitemap, baseDomain);
+    }
+
+    updateResults();
+
+    if (pages.size > 0) {
+        document.getElementById("status").textContent =
+            "Finished! Found " + pages.size + " pages.";
+    } else {
+        document.getElementById("status").textContent =
+            "No pages found. The website may block browser requests, " +
+            "or it may not have a readable sitemap.xml.";
+    }
+}
+
+function updateResults() {
+    const container = document.getElementById("results");
+    container.replaceChildren();
+
+    const sortedPages = Array.from(pages).sort();
+
+    document.getElementById("count").textContent =
+        "Pages found: " + sortedPages.length;
+
+    for (const page of sortedPages) {
+        const link = document.createElement("a");
+        link.href = page;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = page;
+
+        container.appendChild(link);
+        container.appendChild(document.createElement("br"));
+    }
+}
+
+function clearResults() {
+    pages.clear();
+    visitedSitemaps.clear();
+
+    document.getElementById("domain").value = "";
+    document.getElementById("status").textContent = "Ready.";
+
+    updateResults();
+}
+
+function downloadResults() {
+    if (pages.size === 0) {
+        document.getElementById("status").textContent =
+            "No pages to download.";
+        return;
+    }
+
+    const content = Array.from(pages).sort().join("\n");
+    const blob = new Blob([content], {
+        type: "text/plain;charset=utf-8"
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = "found-pages.txt";
+    link.click();
+
+    URL.revokeObjectURL(url);
+}
+</script>
+
+</body>
+</html>
