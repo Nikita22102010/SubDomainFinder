@@ -112,7 +112,7 @@ async function findPages() {
             for (const pattern of patterns) {
                 if (stopped) break;
 
-                const api = new URL(index.cdxapi);
+                const api = new URL(index["cdx-api"]);
                 api.searchParams.set("url", pattern);
                 api.searchParams.set("output", "json");
                 api.searchParams.set("filter", "status:200");
