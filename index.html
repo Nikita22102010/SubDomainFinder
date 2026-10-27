@@ -97,7 +97,7 @@ async function findPages() {
         const indexes = await response.json();
 
         // Search the three most recent available archives.
-        for (const index of indexes.slice(0, 3)) {
+        for (const index of indexes) {
             if (stopped) break;
 
             document.getElementById("status").textContent =
