@@ -9,178 +9,48 @@
 
 <h1>SubDomain Finder</h1>
 
-<p>Enter website domain:</p>
+<input id="domain" placeholder="deltarune.com" size="35">
 
-<input type="text" id="domain" placeholder="deltarune.com" size="40">
 <button onclick="findPages()">Find pages</button>
+<button onclick="stopSearch()">Stop</button>
 <button onclick="clearResults()">Clear</button>
 <button onclick="downloadResults()">Download TXT</button>
 
 <p id="status">Ready.</p>
-
-<h2>Found pages:</h2>
 <p id="count">Pages found: 0</p>
 
 <div id="results"></div>
 
 <script>
 let pages = new Set();
-let visitedSitemaps = new Set();
-
-async function fetchText(url) {
-    const response = await fetch(url);
-
-    if (!response.ok) {
-        throw new Error("HTTP " + response.status);
-    }
-
-    return await response.text();
-}
+let stopped = false;
 
 function normalizeDomain(value) {
     value = value.trim();
 
-    if (!value.startsWith("http://") &&
-        !value.startsWith("https://")) {
+    if (!/^https?:\/\//i.test(value)) {
         value = "https://" + value;
     }
 
     const url = new URL(value);
 
-    if (!["http:", "https:"].includes(url.protocol)) {
-        throw new Error("Only HTTP and HTTPS are supported.");
+    if (!["https:", "http:"].includes(url.protocol)) {
+        throw new Error("Invalid protocol");
     }
 
-    return url.origin;
-}
-
-async function readSitemap(url, baseDomain) {
-    if (visitedSitemaps.has(url)) return;
-    visitedSitemaps.add(url);
-
-    if (visitedSitemaps.size > 500) return;
-
-    try {
-        const xml = await fetchText(url);
-        const documentXML = new DOMParser()
-            .parseFromString(xml, "application/xml");
-
-        if (documentXML.querySelector("parsererror")) return;
-
-        const locations = Array.from(
-            documentXML.getElementsByTagNameNS("*", "loc")
-        ).map(node => node.textContent.trim());
-
-        const isSitemapIndex =
-            documentXML.getElementsByTagNameNS(
-                "*", "sitemapindex"
-            ).length > 0;
-
-        if (isSitemapIndex) {
-            for (const location of locations) {
-                try {
-                    const parsed = new URL(location);
-
-                    if (
-                        parsed.protocol.startsWith("http") &&
-                        parsed.hostname === new URL(baseDomain).hostname
-                    ) {
-                        await readSitemap(location, baseDomain);
-                    }
-                } catch (error) {}
-            }
-        } else {
-            for (const location of locations) {
-                try {
-                    const parsed = new URL(location);
-
-                    if (
-                        parsed.origin === baseDomain &&
-                        parsed.protocol.startsWith("http")
-                    ) {
-                        pages.add(parsed.href);
-                    }
-                } catch (error) {}
-            }
-
-            updateResults();
-        }
-    } catch (error) {
-        console.log("Could not read sitemap:", url, error.message);
-    }
-}
-
-async function findPages() {
-    const input = document.getElementById("domain").value;
-
-    if (!input.trim()) {
-        document.getElementById("status").textContent =
-            "Enter a domain first.";
-        return;
-    }
-
-    pages.clear();
-    visitedSitemaps.clear();
-    updateResults();
-
-    let baseDomain;
-
-    try {
-        baseDomain = normalizeDomain(input);
-    } catch (error) {
-        document.getElementById("status").textContent =
-            "Invalid domain.";
-        return;
-    }
-
-    document.getElementById("status").textContent =
-        "Searching sitemaps...";
-
-    const sitemapCandidates = new Set([
-        baseDomain + "/sitemap.xml",
-        baseDomain + "/sitemap_index.xml"
-    ]);
-
-    try {
-        const robots = await fetchText(baseDomain + "/robots.txt");
-
-        for (const line of robots.split(/\r?\n/)) {
-            const match = line.match(/^\s*Sitemap:\s*(\S+)/i);
-
-            if (match) {
-                sitemapCandidates.add(match[1]);
-            }
-        }
-    } catch (error) {
-        console.log("Could not read robots.txt:", error.message);
-    }
-
-    for (const sitemap of sitemapCandidates) {
-        await readSitemap(sitemap, baseDomain);
-    }
-
-    updateResults();
-
-    if (pages.size > 0) {
-        document.getElementById("status").textContent =
-            "Finished! Found " + pages.size + " pages.";
-    } else {
-        document.getElementById("status").textContent =
-            "No pages found. The website may block browser requests, " +
-            "or it may not have a readable sitemap.xml.";
-    }
+    return url.hostname.toLowerCase().replace(/\.$/, "");
 }
 
 function updateResults() {
     const container = document.getElementById("results");
+    const sorted = [...pages].sort();
+
     container.replaceChildren();
 
-    const sortedPages = Array.from(pages).sort();
-
     document.getElementById("count").textContent =
-        "Pages found: " + sortedPages.length;
+        "Pages found: " + sorted.length;
 
-    for (const page of sortedPages) {
+    for (const page of sorted) {
         const link = document.createElement("a");
         link.href = page;
         link.target = "_blank";
@@ -192,25 +62,136 @@ function updateResults() {
     }
 }
 
-function clearResults() {
+async function findPages() {
+    stopped = false;
     pages.clear();
-    visitedSitemaps.clear();
+    updateResults();
 
-    document.getElementById("domain").value = "";
-    document.getElementById("status").textContent = "Ready.";
+    let domain;
+
+    try {
+        domain = normalizeDomain(
+            document.getElementById("domain").value
+        );
+
+        if (!domain.includes(".")) throw new Error();
+    } catch (error) {
+        document.getElementById("status").textContent =
+            "Enter a valid domain.";
+        return;
+    }
+
+    document.getElementById("status").textContent =
+        "Loading Common Crawl indexes...";
+
+    try {
+        const response = await fetch(
+            "https://index.commoncrawl.org/collinfo.json"
+        );
+
+        if (!response.ok) {
+            throw new Error("Cannot load index list: HTTP " +
+                response.status);
+        }
+
+        const indexes = await response.json();
+
+        // Search the three most recent available archives.
+        for (const index of indexes.slice(0, 3)) {
+            if (stopped) break;
+
+            document.getElementById("status").textContent =
+                "Searching archive " + index.id + "...";
+
+            // Search both the domain and its subdomains.
+            const patterns = [
+                domain + "/*",
+                "*." + domain + "/*"
+            ];
+
+            for (const pattern of patterns) {
+                if (stopped) break;
+
+                const api = new URL(index.cdxapi);
+                api.searchParams.set("url", pattern);
+                api.searchParams.set("output", "json");
+                api.searchParams.set("filter", "status:200");
+                api.searchParams.set("collapse", "urlkey");
+
+                const result = await fetch(api.toString());
+
+                if (!result.ok) {
+                    if (result.status === 503 ||
+                        result.status === 429) {
+                        throw new Error(
+                            "Common Crawl rate limit reached. Try later."
+                        );
+                    }
+
+                    continue;
+                }
+
+                const text = await result.text();
+
+                for (const line of text.split(/\r?\n/)) {
+                    if (!line.trim()) continue;
+
+                    try {
+                        const item = JSON.parse(line);
+                        const url = new URL(item.url);
+                        const host = url.hostname.toLowerCase();
+
+                        if (
+                            host === domain ||
+                            host.endsWith("." + domain)
+                        ) {
+                            pages.add(url.href);
+                        }
+                    } catch (error) {}
+                }
+
+                updateResults();
+            }
+        }
+
+        document.getElementById("status").textContent =
+            stopped
+                ? "Search stopped."
+                : "Finished. Results are from archived crawls.";
+
+    } catch (error) {
+        document.getElementById("status").textContent =
+            "Error: " + error.message +
+            ". The API may be unavailable or blocked by CORS.";
+    }
 
     updateResults();
 }
 
+function stopSearch() {
+    stopped = true;
+    document.getElementById("status").textContent =
+        "Stopping search...";
+}
+
+function clearResults() {
+    stopped = true;
+    pages.clear();
+    document.getElementById("domain").value = "";
+    document.getElementById("status").textContent = "Ready.";
+    updateResults();
+}
+
 function downloadResults() {
-    if (pages.size === 0) {
+    const text = [...pages].sort().join("\n");
+
+    if (!text) {
         document.getElementById("status").textContent =
-            "No pages to download.";
+            "Nothing to download.";
         return;
     }
 
-    const content = Array.from(pages).sort().join("\n");
-    const blob = new Blob([content], {
+    const blob = new Blob([text], {
         type: "text/plain;charset=utf-8"
     });
 
@@ -221,7 +202,7 @@ function downloadResults() {
     link.download = "found-pages.txt";
     link.click();
 
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 </script>
 
